@@ -15,7 +15,7 @@ const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') as string;
 async function sendSubscriptionEmail(email: string, name: string | null, plan: string, amount: string) {
   try {
     await resend.emails.send({
-      from: 'Vehicle Maintenance Log <noreply@resend.dev>',
+      from: 'GetCarLog <noreply@getcarlog.com>',
       to: email,
       subject: 'Welcome to Pro! 🎉',
       html: `

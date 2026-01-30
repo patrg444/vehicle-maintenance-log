@@ -3,7 +3,7 @@ import { Resend } from 'https://esm.sh/resend@2.0.0';
 
 const resend = new Resend(Deno.env.get('RESEND_API_KEY'));
 
-const FROM_EMAIL = 'Vehicle Maintenance Log <noreply@resend.dev>';
+const FROM_EMAIL = 'GetCarLog <noreply@getcarlog.com>';
 
 interface EmailRequest {
   type: 'welcome' | 'subscription' | 'reminder';
