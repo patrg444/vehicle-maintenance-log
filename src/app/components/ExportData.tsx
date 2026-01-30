@@ -4,10 +4,11 @@ import { Button } from '@/app/components/ui/button';
 import { Input } from '@/app/components/ui/input';
 import { EmptyState } from '@/app/components/EmptyState';
 import { Vehicle, ServiceEntry, Reminder } from '@/app/types';
-import { Download, FileText, FileSpreadsheet, Package, Upload } from 'lucide-react';
+import { Download, FileText, FileSpreadsheet, Package, Upload, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 import jsPDF from 'jspdf';
+import * as db from '@/lib/database';
 
 interface ExportDataProps {
   vehicles: Vehicle[];
@@ -18,6 +19,14 @@ interface ExportDataProps {
   setSelectedVehicleId: (id: string) => void;
   onAddVehicle?: () => void;
   onAddService?: () => void;
+  onImportComplete?: () => void;
+}
+
+interface ImportData {
+  vehicles?: Array<Omit<Vehicle, 'id'> & { id?: string }>;
+  services?: Array<Omit<ServiceEntry, 'id' | 'receipts'> & { id?: string; vehicleId: string }>;
+  reminders?: Array<Omit<Reminder, 'id'> & { id?: string; vehicleId: string }>;
+  exportDate?: string;
 }
 
 export function ExportData({
@@ -28,8 +37,10 @@ export function ExportData({
   selectedVehicleId,
   onAddVehicle,
   onAddService,
+  onImportComplete,
 }: ExportDataProps) {
   const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
 
   const vehicleServices = services.filter((s) => s.vehicleId === selectedVehicleId);
 
@@ -247,23 +258,107 @@ export function ExportData({
     toast.success('Full backup exported');
   };
 
-  const importData = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importData = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = JSON.parse(e.target?.result as string);
-        // In a real app, you'd validate the data structure
-        // and use setters to update the state
-        console.log('Import data:', data);
-        toast.success('Data imported successfully');
-      } catch (error) {
-        toast.error('Failed to import data. Invalid file format.');
+    setIsImporting(true);
+
+    try {
+      const text = await file.text();
+      const data: ImportData = JSON.parse(text);
+
+      // Validate basic structure
+      if (!data.vehicles && !data.services && !data.reminders) {
+        throw new Error('Invalid backup file: no data found');
       }
-    };
-    reader.readAsText(file);
+
+      let vehiclesImported = 0;
+      let servicesImported = 0;
+      let remindersImported = 0;
+
+      // Map old vehicle IDs to new ones for linking services and reminders
+      const vehicleIdMap: Record<string, string> = {};
+
+      // Import vehicles first
+      if (data.vehicles && Array.isArray(data.vehicles)) {
+        for (const vehicle of data.vehicles) {
+          const oldId = vehicle.id;
+          const { id: _, ...vehicleData } = vehicle;
+          const newVehicle = await db.createVehicle({
+            make: vehicleData.make || 'Unknown',
+            model: vehicleData.model || 'Unknown',
+            year: vehicleData.year || new Date().getFullYear(),
+            vin: vehicleData.vin,
+            odometerUnit: vehicleData.odometerUnit || 'miles',
+            currentOdometer: vehicleData.currentOdometer ?? null,
+            isArchived: vehicleData.isArchived || false,
+          });
+          if (oldId) {
+            vehicleIdMap[oldId] = newVehicle.id;
+          }
+          vehiclesImported++;
+        }
+      }
+
+      // Import services (link to new vehicle IDs)
+      if (data.services && Array.isArray(data.services)) {
+        for (const service of data.services) {
+          const newVehicleId = vehicleIdMap[service.vehicleId];
+          if (!newVehicleId) continue; // Skip if vehicle wasn't imported
+
+          await db.createService({
+            vehicleId: newVehicleId,
+            date: service.date || new Date().toISOString().split('T')[0],
+            odometer: service.odometer ?? null,
+            category: service.category || 'Other',
+            serviceType: service.serviceType || 'General Service',
+            notes: service.notes || '',
+            cost: service.cost ?? null,
+            vendor: service.vendor || '',
+            isDIY: service.isDIY || false,
+          });
+          servicesImported++;
+        }
+      }
+
+      // Import reminders (link to new vehicle IDs)
+      if (data.reminders && Array.isArray(data.reminders)) {
+        for (const reminder of data.reminders) {
+          const newVehicleId = vehicleIdMap[reminder.vehicleId];
+          if (!newVehicleId) continue; // Skip if vehicle wasn't imported
+
+          await db.createReminder({
+            vehicleId: newVehicleId,
+            title: reminder.title || 'Imported Reminder',
+            type: reminder.type || 'time',
+            dueDate: reminder.dueDate,
+            dueMileage: reminder.dueMileage,
+            intervalMonths: reminder.intervalMonths,
+            intervalMiles: reminder.intervalMiles,
+            lastCompleted: reminder.lastCompleted,
+            lastCompletedOdometer: reminder.lastCompletedOdometer,
+            isActive: reminder.isActive ?? true,
+          });
+          remindersImported++;
+        }
+      }
+
+      toast.success(
+        `Import complete: ${vehiclesImported} vehicles, ${servicesImported} services, ${remindersImported} reminders`
+      );
+
+      // Refresh data in parent
+      onImportComplete?.();
+
+      // Reset file input
+      event.target.value = '';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Invalid file format';
+      toast.error(`Failed to import: ${message}`);
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   if (!selectedVehicle) {
@@ -455,12 +550,17 @@ export function ExportData({
                 onChange={importData}
                 className="hidden"
                 id="import-data"
+                disabled={isImporting}
               />
               <label htmlFor="import-data">
-                <Button variant="outline" className="w-full" asChild>
+                <Button variant="outline" className="w-full" disabled={isImporting} asChild>
                   <span>
-                    <Upload className="w-4 h-4 mr-2" />
-                    Import JSON
+                    {isImporting ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4 mr-2" />
+                    )}
+                    {isImporting ? 'Importing...' : 'Import JSON'}
                   </span>
                 </Button>
               </label>

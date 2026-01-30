@@ -67,7 +67,8 @@ export function VehicleList({
       return;
     }
 
-    const odometerValue = formData.currentOdometer === '' ? null : parseInt(formData.currentOdometer);
+    const parsedOdometer = formData.currentOdometer === '' ? null : parseInt(formData.currentOdometer);
+    const safeOdometer = parsedOdometer !== null && !isNaN(parsedOdometer) ? parsedOdometer : null;
 
     setSaving(true);
     try {
@@ -79,7 +80,7 @@ export function VehicleList({
           year: formData.year,
           vin: formData.vin || undefined,
           odometerUnit: formData.odometerUnit,
-          currentOdometer: odometerValue,
+          currentOdometer: safeOdometer,
         });
         setVehicles(prev => prev.map(v => v.id === editingVehicle.id ? updated : v));
         toast.success('Vehicle updated successfully');
@@ -91,7 +92,7 @@ export function VehicleList({
           year: formData.year,
           vin: formData.vin || undefined,
           odometerUnit: formData.odometerUnit,
-          currentOdometer: odometerValue,
+          currentOdometer: safeOdometer,
         });
         setVehicles(prev => [...prev, newVehicle]);
         setSelectedVehicleId(newVehicle.id);
@@ -187,16 +188,18 @@ export function VehicleList({
   const submitOdometerUpdate = async () => {
     if (!updatingOdometerVehicle) return;
 
-    const newOdometer = odometerValue === '' ? null : parseInt(odometerValue);
-
+    // Validate and parse odometer value
     if (odometerValue !== '' && isNaN(Number(odometerValue))) {
       toast.error('Please enter a valid number');
       return;
     }
 
+    const parsedOdometer = odometerValue === '' ? null : parseInt(odometerValue);
+    const safeOdometer = parsedOdometer !== null && !isNaN(parsedOdometer) ? parsedOdometer : null;
+
     setSaving(true);
     try {
-      const updated = await db.updateVehicle(updatingOdometerVehicle.id, { currentOdometer: newOdometer });
+      const updated = await db.updateVehicle(updatingOdometerVehicle.id, { currentOdometer: safeOdometer });
       setVehicles(prev => prev.map(v => v.id === updatingOdometerVehicle.id ? updated : v));
       toast.success('Odometer updated successfully');
       setIsOdometerDialogOpen(false);
@@ -278,9 +281,10 @@ export function VehicleList({
                       id="year"
                       type="number"
                       value={formData.year}
-                      onChange={(e) =>
-                        setFormData({ ...formData, year: parseInt(e.target.value) })
-                      }
+                      onChange={(e) => {
+                        const parsed = parseInt(e.target.value);
+                        setFormData({ ...formData, year: isNaN(parsed) ? new Date().getFullYear() : parsed });
+                      }}
                       min={1900}
                       max={new Date().getFullYear() + 1}
                       disabled={saving}

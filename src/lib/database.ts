@@ -158,6 +158,7 @@ export async function createService(service: Omit<ServiceEntry, 'id' | 'receipts
 
   // Upload receipts if any
   const uploadedReceipts: Receipt[] = [];
+  const failedUploads: string[] = [];
   if (receipts && receipts.length > 0) {
     for (const file of receipts) {
       const filePath = `${user.id}/${data.id}/${Date.now()}_${file.name}`;
@@ -165,29 +166,46 @@ export async function createService(service: Omit<ServiceEntry, 'id' | 'receipts
         .from('receipts')
         .upload(filePath, file);
 
-      if (!uploadError) {
-        const { data: receiptData } = await supabase
-          .from('receipts')
-          .insert({
-            user_id: user.id,
-            service_id: data.id,
-            name: file.name,
-            storage_path: filePath,
-            mime_type: file.type,
-          })
-          .select()
-          .single();
+      if (uploadError) {
+        console.error(`Failed to upload receipt ${file.name}:`, uploadError);
+        failedUploads.push(file.name);
+        continue;
+      }
 
-        if (receiptData) {
-          uploadedReceipts.push({
-            id: receiptData.id,
-            name: receiptData.name,
-            dataUrl: '',
-            type: receiptData.mime_type || '',
-          });
-        }
+      const { data: receiptData, error: dbError } = await supabase
+        .from('receipts')
+        .insert({
+          user_id: user.id,
+          service_id: data.id,
+          name: file.name,
+          storage_path: filePath,
+          mime_type: file.type,
+        })
+        .select()
+        .single();
+
+      if (dbError) {
+        console.error(`Failed to save receipt record for ${file.name}:`, dbError);
+        // Try to clean up the uploaded file
+        await supabase.storage.from('receipts').remove([filePath]);
+        failedUploads.push(file.name);
+        continue;
+      }
+
+      if (receiptData) {
+        uploadedReceipts.push({
+          id: receiptData.id,
+          name: receiptData.name,
+          dataUrl: '',
+          type: receiptData.mime_type || '',
+        });
       }
     }
+  }
+
+  // Log warning if some receipts failed to upload
+  if (failedUploads.length > 0) {
+    console.warn(`Failed to upload ${failedUploads.length} receipt(s): ${failedUploads.join(', ')}`);
   }
 
   return toServiceEntry(data, uploadedReceipts);
@@ -225,7 +243,11 @@ export async function deleteService(id: string): Promise<void> {
 
   if (receipts && receipts.length > 0) {
     const paths = receipts.map(r => r.storage_path);
-    await supabase.storage.from('receipts').remove(paths);
+    const { error: storageError } = await supabase.storage.from('receipts').remove(paths);
+    if (storageError) {
+      console.error('Failed to delete receipt files from storage:', storageError);
+      // Continue with service deletion even if storage cleanup fails
+    }
   }
 
   const { error } = await supabase.from('services').delete().eq('id', id);

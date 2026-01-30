@@ -136,12 +136,20 @@ export function useData() {
   const setRemindersState = (newReminders: Reminder[] | ((prev: Reminder[]) => Reminder[])) => {
     setReminders(prev => {
       const updated = typeof newReminders === 'function' ? newReminders(prev) : newReminders;
-      // Sync changes to database
-      updated.forEach(async (reminder) => {
-        const original = prev.find(r => r.id === reminder.id);
-        if (original && JSON.stringify(original) !== JSON.stringify(reminder)) {
-          await db.updateReminder(reminder.id, reminder);
-        }
+      // Sync changes to database (fire and forget, but with error handling)
+      Promise.all(
+        updated.map(async (reminder) => {
+          const original = prev.find(r => r.id === reminder.id);
+          if (original && JSON.stringify(original) !== JSON.stringify(reminder)) {
+            try {
+              await db.updateReminder(reminder.id, reminder);
+            } catch (error) {
+              console.error('Failed to sync reminder update:', error);
+            }
+          }
+        })
+      ).catch(error => {
+        console.error('Failed to sync reminder updates:', error);
       });
       return updated;
     });

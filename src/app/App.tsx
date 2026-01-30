@@ -32,6 +32,7 @@ function App() {
     setVehicles,
     setServices,
     setReminders,
+    refetch,
   } = useData();
 
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
@@ -236,6 +237,7 @@ function App() {
                 setSelectedVehicleId={setSelectedVehicleId}
                 onAddVehicle={handleAddVehicle}
                 onAddService={handleAddService}
+                onImportComplete={refetch}
               />
             </TabsContent>
 

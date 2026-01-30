@@ -67,8 +67,9 @@ export function ServiceLog({
   const vehicleServices = services.filter((s) => s.vehicleId === selectedVehicleId);
 
   // Get last service odometer for validation
-  const lastServiceOdometer = vehicleServices.length > 0
-    ? Math.max(...vehicleServices.filter(s => s.odometer !== null).map(s => s.odometer!))
+  const servicesWithOdometer = vehicleServices.filter(s => s.odometer !== null);
+  const lastServiceOdometer = servicesWithOdometer.length > 0
+    ? Math.max(...servicesWithOdometer.map(s => s.odometer!))
     : selectedVehicle?.currentOdometer || 0;
 
   // Update odometer when vehicle changes
@@ -126,14 +127,18 @@ export function ServiceLog({
 
     setSaving(true);
     try {
+      // Parse numeric values safely
+      const parsedOdometer = formData.odometer ? parseFloat(formData.odometer) : null;
+      const parsedCost = formData.cost ? parseFloat(formData.cost) : null;
+
       const newService = await db.createService({
         vehicleId: selectedVehicleId,
         date: formData.date,
-        odometer: formData.odometer ? parseFloat(formData.odometer) : null,
+        odometer: parsedOdometer !== null && !isNaN(parsedOdometer) ? parsedOdometer : null,
         category: formData.category,
         serviceType: formData.serviceType,
         notes: formData.notes,
-        cost: parseFloat(formData.cost) || null,
+        cost: parsedCost !== null && !isNaN(parsedCost) ? parsedCost : null,
         vendor: performedBy === 'shop' ? formData.vendor : 'DIY',
         isDIY: performedBy === 'diy',
       }, receiptFiles.length > 0 ? receiptFiles : undefined);
@@ -141,12 +146,11 @@ export function ServiceLog({
       setServices(prev => [newService, ...prev]);
 
       // Update vehicle odometer if this service has a higher value
-      if (selectedVehicle && formData.odometer) {
-        const newOdometer = parseFloat(formData.odometer);
+      if (selectedVehicle && parsedOdometer !== null && !isNaN(parsedOdometer)) {
         const currentOdometer = selectedVehicle.currentOdometer ?? 0;
 
-        if (newOdometer > currentOdometer) {
-          const updated = await db.updateVehicle(selectedVehicleId, { currentOdometer: newOdometer });
+        if (parsedOdometer > currentOdometer) {
+          const updated = await db.updateVehicle(selectedVehicleId, { currentOdometer: parsedOdometer });
           setVehicles(prev => prev.map(v => v.id === selectedVehicleId ? updated : v));
         }
       }
