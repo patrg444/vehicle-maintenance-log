@@ -43,7 +43,7 @@ export function VehicleSelector({
               <span>
                 {selectedVehicle.year} {selectedVehicle.make} {selectedVehicle.model}
                 <span className="text-gray-500 text-xs ml-2">
-                  ({selectedVehicle.currentOdometer.toLocaleString()}{' '}
+                  ({selectedVehicle.currentOdometer?.toLocaleString() ?? '—'}{' '}
                   {selectedVehicle.odometerUnit})
                 </span>
               </span>
@@ -61,7 +61,7 @@ export function VehicleSelector({
                 {vehicle.year} {vehicle.make} {vehicle.model}
               </span>
               <span className="text-xs text-gray-500">
-                {vehicle.currentOdometer.toLocaleString()} {vehicle.odometerUnit}
+                {vehicle.currentOdometer?.toLocaleString() ?? '—'} {vehicle.odometerUnit}
               </span>
             </div>
           </SelectItem>

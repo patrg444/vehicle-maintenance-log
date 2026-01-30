@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from '@/app/components/ui/select';
 import { EmptyState } from '@/app/components/EmptyState';
+import { Vehicle, Reminder, ServiceEntry } from '@/app/types';
 
 // Helper to parse date string as local date (not UTC)
 const parseLocalDate = (dateStr: string): Date => {
@@ -86,7 +87,7 @@ export function Reminders({
     if (!selectedVehicle) return false;
 
     const now = new Date();
-    const currentOdometer = selectedVehicle.currentOdometer;
+    const currentOdometer = selectedVehicle.currentOdometer ?? 0;
 
     if (reminder.type === 'time' && reminder.dueDate) {
       return parseLocalDate(reminder.dueDate) <= now;
@@ -174,7 +175,7 @@ export function Reminders({
     }
 
     if (reminder.type !== 'time' && reminder.intervalMiles) {
-      nextDueMileage = selectedVehicle.currentOdometer + reminder.intervalMiles;
+      nextDueMileage = (selectedVehicle.currentOdometer ?? 0) + reminder.intervalMiles;
     }
 
     setReminders(
@@ -239,7 +240,7 @@ export function Reminders({
             <div>
               <p className="text-sm text-gray-600">Current Odometer</p>
               <p className="text-lg font-semibold text-gray-900">
-                {selectedVehicle.currentOdometer.toLocaleString()}
+                {selectedVehicle.currentOdometer?.toLocaleString() ?? '—'}
               </p>
               <p className="text-sm text-gray-700">{selectedVehicle.odometerUnit}</p>
             </div>
