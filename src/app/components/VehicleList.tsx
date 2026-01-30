@@ -27,14 +27,15 @@ import {
   DropdownMenuTrigger,
 } from '@/app/components/ui/dropdown-menu';
 import { Vehicle } from '@/app/types';
-import { Plus, Car, Gauge, MoreVertical, Archive, Trash2, Edit } from 'lucide-react';
+import { Plus, Car, Gauge, MoreVertical, Archive, Trash2, Edit, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import * as db from '@/lib/database';
 
 interface VehicleListProps {
   vehicles: Vehicle[];
-  setVehicles: (vehicles: Vehicle[]) => void;
+  setVehicles: (vehicles: Vehicle[] | ((prev: Vehicle[]) => Vehicle[])) => void;
   selectedVehicleId: string | null;
-  setSelectedVehicleId: (id: string) => void;
+  setSelectedVehicleId: (id: string | null) => void;
 }
 
 export function VehicleList({
@@ -48,6 +49,7 @@ export function VehicleList({
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [updatingOdometerVehicle, setUpdatingOdometerVehicle] = useState<Vehicle | null>(null);
   const [odometerValue, setOdometerValue] = useState('');
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     make: '',
     model: '',
@@ -57,7 +59,7 @@ export function VehicleList({
     currentOdometer: '',
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!formData.make || !formData.model) {
@@ -67,34 +69,43 @@ export function VehicleList({
 
     const odometerValue = formData.currentOdometer === '' ? null : parseInt(formData.currentOdometer);
 
-    if (editingVehicle) {
-      // Update existing vehicle
-      setVehicles(
-        vehicles.map((v) =>
-          v.id === editingVehicle.id 
-            ? { ...v, ...formData, currentOdometer: odometerValue } 
-            : v
-        )
-      );
-      toast.success('Vehicle updated successfully');
-    } else {
-      // Add new vehicle
-      const newVehicle: Vehicle = {
-        id: `vehicle-${Date.now()}`,
-        make: formData.make,
-        model: formData.model,
-        year: formData.year,
-        vin: formData.vin || undefined,
-        odometerUnit: formData.odometerUnit,
-        currentOdometer: odometerValue,
-      };
-      setVehicles([...vehicles, newVehicle]);
-      setSelectedVehicleId(newVehicle.id);
-      toast.success('Vehicle added successfully');
-    }
+    setSaving(true);
+    try {
+      if (editingVehicle) {
+        // Update existing vehicle
+        const updated = await db.updateVehicle(editingVehicle.id, {
+          make: formData.make,
+          model: formData.model,
+          year: formData.year,
+          vin: formData.vin || undefined,
+          odometerUnit: formData.odometerUnit,
+          currentOdometer: odometerValue,
+        });
+        setVehicles(prev => prev.map(v => v.id === editingVehicle.id ? updated : v));
+        toast.success('Vehicle updated successfully');
+      } else {
+        // Add new vehicle
+        const newVehicle = await db.createVehicle({
+          make: formData.make,
+          model: formData.model,
+          year: formData.year,
+          vin: formData.vin || undefined,
+          odometerUnit: formData.odometerUnit,
+          currentOdometer: odometerValue,
+        });
+        setVehicles(prev => [...prev, newVehicle]);
+        setSelectedVehicleId(newVehicle.id);
+        toast.success('Vehicle added successfully');
+      }
 
-    setIsDialogOpen(false);
-    resetForm();
+      setIsDialogOpen(false);
+      resetForm();
+    } catch (error) {
+      toast.error('Failed to save vehicle');
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const resetForm = () => {
@@ -122,38 +133,48 @@ export function VehicleList({
     setIsDialogOpen(true);
   };
 
-  const handleArchive = (vehicleId: string) => {
+  const handleArchive = async (vehicleId: string) => {
     const vehicle = vehicles.find(v => v.id === vehicleId);
     if (!vehicle) return;
 
-    setVehicles(
-      vehicles.map((v) =>
-        v.id === vehicleId ? { ...v, isArchived: !v.isArchived } : v
-      )
-    );
-    
-    if (selectedVehicleId === vehicleId) {
-      const activeVehicles = vehicles.filter(v => v.id !== vehicleId && !v.isArchived);
-      if (activeVehicles.length > 0) {
-        setSelectedVehicleId(activeVehicles[0].id);
+    try {
+      const updated = await db.updateVehicle(vehicleId, { isArchived: !vehicle.isArchived });
+      setVehicles(prev => prev.map(v => v.id === vehicleId ? updated : v));
+
+      if (selectedVehicleId === vehicleId && !vehicle.isArchived) {
+        const activeVehicles = vehicles.filter(v => v.id !== vehicleId && !v.isArchived);
+        if (activeVehicles.length > 0) {
+          setSelectedVehicleId(activeVehicles[0].id);
+        } else {
+          setSelectedVehicleId(null);
+        }
       }
+
+      toast.success(vehicle.isArchived ? 'Vehicle restored' : 'Vehicle archived');
+    } catch (error) {
+      toast.error('Failed to archive vehicle');
+      console.error(error);
     }
-    
-    toast.success(vehicle.isArchived ? 'Vehicle restored' : 'Vehicle archived');
   };
 
-  const handleDelete = (vehicleId: string) => {
+  const handleDelete = async (vehicleId: string) => {
     const confirmed = window.confirm(
-      'Are you sure you want to permanently delete this vehicle? This action cannot be undone. Type DELETE to confirm.'
+      'Are you sure you want to permanently delete this vehicle? This will also delete all associated service records and reminders. This action cannot be undone.'
     );
-    
+
     if (confirmed) {
-      setVehicles(vehicles.filter((v) => v.id !== vehicleId));
-      if (selectedVehicleId === vehicleId && vehicles.length > 1) {
-        const remaining = vehicles.filter((v) => v.id !== vehicleId);
-        setSelectedVehicleId(remaining.length > 0 ? remaining[0].id : null);
+      try {
+        await db.deleteVehicle(vehicleId);
+        setVehicles(prev => prev.filter(v => v.id !== vehicleId));
+        if (selectedVehicleId === vehicleId) {
+          const remaining = vehicles.filter(v => v.id !== vehicleId);
+          setSelectedVehicleId(remaining.length > 0 ? remaining[0].id : null);
+        }
+        toast.success('Vehicle deleted');
+      } catch (error) {
+        toast.error('Failed to delete vehicle');
+        console.error(error);
       }
-      toast.success('Vehicle deleted');
     }
   };
 
@@ -163,27 +184,30 @@ export function VehicleList({
     setIsOdometerDialogOpen(true);
   };
 
-  const submitOdometerUpdate = () => {
+  const submitOdometerUpdate = async () => {
     if (!updatingOdometerVehicle) return;
 
     const newOdometer = odometerValue === '' ? null : parseInt(odometerValue);
-    
+
     if (odometerValue !== '' && isNaN(Number(odometerValue))) {
       toast.error('Please enter a valid number');
       return;
     }
 
-    setVehicles(
-      vehicles.map((v) =>
-        v.id === updatingOdometerVehicle.id 
-          ? { ...v, currentOdometer: newOdometer } 
-          : v
-      )
-    );
-    toast.success('Odometer updated successfully');
-    setIsOdometerDialogOpen(false);
-    setUpdatingOdometerVehicle(null);
-    setOdometerValue('');
+    setSaving(true);
+    try {
+      const updated = await db.updateVehicle(updatingOdometerVehicle.id, { currentOdometer: newOdometer });
+      setVehicles(prev => prev.map(v => v.id === updatingOdometerVehicle.id ? updated : v));
+      toast.success('Odometer updated successfully');
+      setIsOdometerDialogOpen(false);
+      setUpdatingOdometerVehicle(null);
+      setOdometerValue('');
+    } catch (error) {
+      toast.error('Failed to update odometer');
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   // Filter out archived vehicles for display
@@ -230,6 +254,7 @@ export function VehicleList({
                       }
                       placeholder="Toyota"
                       required
+                      disabled={saving}
                     />
                   </div>
                   <div className="space-y-2">
@@ -242,6 +267,7 @@ export function VehicleList({
                       }
                       placeholder="Camry"
                       required
+                      disabled={saving}
                     />
                   </div>
                 </div>
@@ -257,6 +283,7 @@ export function VehicleList({
                       }
                       min={1900}
                       max={new Date().getFullYear() + 1}
+                      disabled={saving}
                     />
                   </div>
                   <div className="space-y-2">
@@ -266,6 +293,7 @@ export function VehicleList({
                       onValueChange={(value: 'miles' | 'km') =>
                         setFormData({ ...formData, odometerUnit: value })
                       }
+                      disabled={saving}
                     >
                       <SelectTrigger id="odometerUnit">
                         <SelectValue />
@@ -291,6 +319,7 @@ export function VehicleList({
                     }
                     placeholder="Enter current mileage"
                     min={0}
+                    disabled={saving}
                   />
                   <p className="text-xs text-gray-500">Leave blank if unknown</p>
                 </div>
@@ -303,6 +332,7 @@ export function VehicleList({
                       setFormData({ ...formData, vin: e.target.value })
                     }
                     placeholder="1HGBH41JXMN109186"
+                    disabled={saving}
                   />
                 </div>
               </div>
@@ -314,11 +344,19 @@ export function VehicleList({
                     setIsDialogOpen(false);
                     resetForm();
                   }}
+                  disabled={saving}
                 >
                   Cancel
                 </Button>
-                <Button type="submit">
-                  {editingVehicle ? 'Update' : 'Add'} Vehicle
+                <Button type="submit" disabled={saving}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    <>{editingVehicle ? 'Update' : 'Add'} Vehicle</>
+                  )}
                 </Button>
               </DialogFooter>
             </form>
@@ -351,6 +389,7 @@ export function VehicleList({
                 onChange={(e) => setOdometerValue(e.target.value)}
                 placeholder="Enter current mileage"
                 min={0}
+                disabled={saving}
               />
               {updatingOdometerVehicle?.currentOdometer !== null && (
                 <p className="text-xs text-gray-500">
@@ -364,11 +403,19 @@ export function VehicleList({
               type="button"
               variant="outline"
               onClick={() => setIsOdometerDialogOpen(false)}
+              disabled={saving}
             >
               Cancel
             </Button>
-            <Button onClick={submitOdometerUpdate}>
-              Update
+            <Button onClick={submitOdometerUpdate} disabled={saving}>
+              {saving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Updating...
+                </>
+              ) : (
+                'Update'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -446,7 +493,7 @@ export function VehicleList({
                           e.stopPropagation();
                           handleDelete(vehicle.id);
                         }}
-                        variant="destructive"
+                        className="text-red-600"
                       >
                         <Trash2 className="mr-2 h-4 w-4" />
                         Delete
@@ -460,7 +507,7 @@ export function VehicleList({
                   <div className="flex justify-between">
                     <span className="text-gray-600">Odometer:</span>
                     <span className="font-medium">
-                      {vehicle.currentOdometer !== null 
+                      {vehicle.currentOdometer !== null
                         ? `${vehicle.currentOdometer.toLocaleString()} ${vehicle.odometerUnit}`
                         : 'Not set'
                       }

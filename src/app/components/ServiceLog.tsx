@@ -22,16 +22,17 @@ import {
 } from '@/app/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/app/components/ui/radio-group';
 import { EmptyState } from '@/app/components/EmptyState';
-import { Vehicle, ServiceEntry, Receipt, SERVICE_CATEGORIES } from '@/app/types';
-import { Plus, FileText, Upload, X, File, DollarSign, Calendar } from 'lucide-react';
+import { Vehicle, ServiceEntry, SERVICE_CATEGORIES } from '@/app/types';
+import { Plus, FileText, Upload, X, File, DollarSign, Calendar, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
+import * as db from '@/lib/database';
 
 interface ServiceLogProps {
   vehicles: Vehicle[];
-  setVehicles: (vehicles: Vehicle[]) => void;
+  setVehicles: (vehicles: Vehicle[] | ((prev: Vehicle[]) => Vehicle[])) => void;
   services: ServiceEntry[];
-  setServices: (services: ServiceEntry[]) => void;
+  setServices: (services: ServiceEntry[] | ((prev: ServiceEntry[]) => ServiceEntry[])) => void;
   selectedVehicle: Vehicle | null;
   selectedVehicleId: string | null;
   setSelectedVehicleId: (id: string) => void;
@@ -50,6 +51,7 @@ export function ServiceLog({
 }: ServiceLogProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [performedBy, setPerformedBy] = useState<'shop' | 'diy'>('shop');
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     date: format(new Date(), 'yyyy-MM-dd'),
     odometer: '',
@@ -60,7 +62,7 @@ export function ServiceLog({
     vendor: '',
     isDIY: false,
   });
-  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [receiptFiles, setReceiptFiles] = useState<File[]>([]);
 
   const vehicleServices = services.filter((s) => s.vehicleId === selectedVehicleId);
 
@@ -83,31 +85,23 @@ export function ServiceLog({
     const files = e.target.files;
     if (!files) return;
 
+    const validFiles: File[] = [];
     Array.from(files).forEach((file) => {
       if (file.size > 5 * 1024 * 1024) {
         toast.error(`File ${file.name} is too large. Max 5MB.`);
         return;
       }
-
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const newReceipt: Receipt = {
-          id: `receipt-${Date.now()}-${Math.random()}`,
-          name: file.name,
-          dataUrl: event.target?.result as string,
-          type: file.type,
-        };
-        setReceipts([...receipts, newReceipt]);
-      };
-      reader.readAsDataURL(file);
+      validFiles.push(file);
     });
+
+    setReceiptFiles(prev => [...prev, ...validFiles]);
   };
 
-  const removeReceipt = (id: string) => {
-    setReceipts(receipts.filter((r) => r.id !== id));
+  const removeReceipt = (index: number) => {
+    setReceiptFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedVehicleId) {
@@ -123,48 +117,49 @@ export function ServiceLog({
     // Validate odometer (warn if it's decreasing, but allow it)
     if (formData.odometer && parseFloat(formData.odometer) < lastServiceOdometer) {
       const confirmed = confirm(
-        `The odometer value (${formData.odometer.toLocaleString()}) is lower than the last recorded value (${lastServiceOdometer.toLocaleString()}). This might be a mistake. Continue anyway?`
+        `The odometer value (${formData.odometer}) is lower than the last recorded value (${lastServiceOdometer.toLocaleString()}). This might be a mistake. Continue anyway?`
       );
       if (!confirmed) {
         return;
       }
     }
 
-    const newService: ServiceEntry = {
-      id: `service-${Date.now()}`,
-      vehicleId: selectedVehicleId,
-      date: formData.date,
-      odometer: formData.odometer ? parseFloat(formData.odometer) : 0,
-      category: formData.category,
-      serviceType: formData.serviceType,
-      notes: formData.notes,
-      cost: parseFloat(formData.cost) || 0,
-      vendor: performedBy === 'shop' ? formData.vendor : 'DIY',
-      isDIY: performedBy === 'diy',
-      receipts,
-    };
+    setSaving(true);
+    try {
+      const newService = await db.createService({
+        vehicleId: selectedVehicleId,
+        date: formData.date,
+        odometer: formData.odometer ? parseFloat(formData.odometer) : null,
+        category: formData.category,
+        serviceType: formData.serviceType,
+        notes: formData.notes,
+        cost: parseFloat(formData.cost) || null,
+        vendor: performedBy === 'shop' ? formData.vendor : 'DIY',
+        isDIY: performedBy === 'diy',
+      }, receiptFiles.length > 0 ? receiptFiles : undefined);
 
-    setServices([...services, newService]);
+      setServices(prev => [newService, ...prev]);
 
-    // Update vehicle odometer if this service has a higher value
-    if (selectedVehicle && formData.odometer) {
-      const newOdometer = parseFloat(formData.odometer);
-      const currentOdometer = selectedVehicle.currentOdometer ?? 0;
-      
-      if (newOdometer > currentOdometer) {
-        setVehicles(
-          vehicles.map((v) =>
-            v.id === selectedVehicleId
-              ? { ...v, currentOdometer: newOdometer }
-              : v
-          )
-        );
+      // Update vehicle odometer if this service has a higher value
+      if (selectedVehicle && formData.odometer) {
+        const newOdometer = parseFloat(formData.odometer);
+        const currentOdometer = selectedVehicle.currentOdometer ?? 0;
+
+        if (newOdometer > currentOdometer) {
+          const updated = await db.updateVehicle(selectedVehicleId, { currentOdometer: newOdometer });
+          setVehicles(prev => prev.map(v => v.id === selectedVehicleId ? updated : v));
+        }
       }
-    }
 
-    toast.success('Service entry added');
-    setIsDialogOpen(false);
-    resetForm();
+      toast.success('Service entry added');
+      setIsDialogOpen(false);
+      resetForm();
+    } catch (error) {
+      toast.error('Failed to save service entry');
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const resetForm = () => {
@@ -179,13 +174,19 @@ export function ServiceLog({
       isDIY: false,
     });
     setPerformedBy('shop');
-    setReceipts([]);
+    setReceiptFiles([]);
   };
 
-  const deleteService = (id: string) => {
+  const deleteService = async (id: string) => {
     if (confirm('Delete this service entry?')) {
-      setServices(services.filter((s) => s.id !== id));
-      toast.success('Service entry deleted');
+      try {
+        await db.deleteService(id);
+        setServices(prev => prev.filter(s => s.id !== id));
+        toast.success('Service entry deleted');
+      } catch (error) {
+        toast.error('Failed to delete service entry');
+        console.error(error);
+      }
     }
   };
 
@@ -230,7 +231,7 @@ export function ServiceLog({
             <div>
               <p className="text-sm text-gray-600">Current Odometer</p>
               <p className="text-lg font-semibold text-gray-900">
-                {selectedVehicle.currentOdometer !== null 
+                {selectedVehicle.currentOdometer !== null
                   ? selectedVehicle.currentOdometer.toLocaleString()
                   : 'Not set'
                 }
@@ -301,6 +302,7 @@ export function ServiceLog({
                         setFormData({ ...formData, date: e.target.value })
                       }
                       required
+                      disabled={saving}
                     />
                   </div>
                   <div className="space-y-2">
@@ -318,6 +320,7 @@ export function ServiceLog({
                         })
                       }
                       required
+                      disabled={saving}
                     />
                     {lastServiceOdometer > 0 && (
                       <p className="text-xs text-gray-500">
@@ -334,7 +337,7 @@ export function ServiceLog({
                       onValueChange={(value) =>
                         setFormData({ ...formData, category: value })
                       }
-                      required
+                      disabled={saving}
                     >
                       <SelectTrigger id="category">
                         <SelectValue placeholder="Select category" />
@@ -357,16 +360,18 @@ export function ServiceLog({
                         setFormData({ ...formData, serviceType: e.target.value })
                       }
                       placeholder="e.g., Full synthetic oil change"
+                      disabled={saving}
                     />
                   </div>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label>Performed by</Label>
                   <RadioGroup
                     value={performedBy}
                     onValueChange={(value: 'shop' | 'diy') => setPerformedBy(value)}
                     className="flex gap-4"
+                    disabled={saving}
                   >
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="shop" id="performed-shop" />
@@ -398,6 +403,7 @@ export function ServiceLog({
                         })
                       }
                       placeholder="e.g., 89.99"
+                      disabled={saving}
                     />
                   </div>
                   <div className="space-y-2">
@@ -411,10 +417,11 @@ export function ServiceLog({
                         setFormData({ ...formData, vendor: e.target.value })
                       }
                       placeholder={
-                        performedBy === 'shop' 
+                        performedBy === 'shop'
                           ? 'e.g., Jiffy Lube, Toyota Dealer'
                           : 'e.g., AutoZone, RockAuto, Amazon'
                       }
+                      disabled={saving}
                     />
                   </div>
                 </div>
@@ -428,6 +435,7 @@ export function ServiceLog({
                     }
                     placeholder="Additional details, parts used, etc."
                     rows={3}
+                    disabled={saving}
                   />
                 </div>
                 <div className="space-y-2">
@@ -440,6 +448,7 @@ export function ServiceLog({
                       onChange={handleFileUpload}
                       className="hidden"
                       id="receipt-upload"
+                      disabled={saving}
                     />
                     <label
                       htmlFor="receipt-upload"
@@ -454,22 +463,23 @@ export function ServiceLog({
                       </span>
                     </label>
                   </div>
-                  {receipts.length > 0 && (
+                  {receiptFiles.length > 0 && (
                     <div className="grid grid-cols-2 gap-2 mt-2">
-                      {receipts.map((receipt) => (
+                      {receiptFiles.map((file, index) => (
                         <div
-                          key={receipt.id}
+                          key={index}
                           className="flex items-center gap-2 p-2 border rounded bg-gray-50"
                         >
                           <File className="w-4 h-4 text-gray-600" />
                           <span className="text-sm flex-1 truncate">
-                            {receipt.name}
+                            {file.name}
                           </span>
                           <Button
                             type="button"
                             variant="ghost"
                             size="sm"
-                            onClick={() => removeReceipt(receipt.id)}
+                            onClick={() => removeReceipt(index)}
+                            disabled={saving}
                           >
                             <X className="w-4 h-4" />
                           </Button>
@@ -487,10 +497,20 @@ export function ServiceLog({
                     setIsDialogOpen(false);
                     resetForm();
                   }}
+                  disabled={saving}
                 >
                   Cancel
                 </Button>
-                <Button type="submit">Add Service Entry</Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    'Add Service Entry'
+                  )}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -502,7 +522,7 @@ export function ServiceLog({
           icon={FileText}
           title="No service history yet"
           description="Add your first service entry to start tracking"
-          helperText="💡 Tip: Start with your last oil change. Attach the receipt and note the odometer reading."
+          helperText="Tip: Start with your last oil change. Attach the receipt and note the odometer reading."
           primaryAction={{
             label: 'Add Service Entry',
             onClick: () => setIsDialogOpen(true),
@@ -517,7 +537,7 @@ export function ServiceLog({
                 <CardHeader>
                   <div className="flex justify-between items-start">
                     <div>
-                      <CardTitle className="text-lg">{service.serviceType}</CardTitle>
+                      <CardTitle className="text-lg">{service.serviceType || service.category}</CardTitle>
                       <CardDescription>{service.category}</CardDescription>
                     </div>
                     <Button
@@ -543,7 +563,7 @@ export function ServiceLog({
                     <div>
                       <p className="text-gray-600">Odometer</p>
                       <p className="font-medium">
-                        {service.odometer !== null 
+                        {service.odometer !== null
                           ? `${service.odometer.toLocaleString()} ${selectedVehicle.odometerUnit}`
                           : 'Unknown'
                         }
@@ -568,22 +588,20 @@ export function ServiceLog({
                       {service.notes}
                     </p>
                   )}
-                  {service.receipts.length > 0 && (
+                  {service.receipts && service.receipts.length > 0 && (
                     <div className="mt-4">
                       <p className="text-sm text-gray-600 mb-2">
                         Attachments ({service.receipts.length})
                       </p>
                       <div className="flex gap-2 flex-wrap">
                         {service.receipts.map((receipt) => (
-                          <a
+                          <div
                             key={receipt.id}
-                            href={receipt.dataUrl}
-                            download={receipt.name}
-                            className="flex items-center gap-2 px-3 py-2 border rounded hover:bg-gray-50 text-sm"
+                            className="flex items-center gap-2 px-3 py-2 border rounded bg-gray-50 text-sm"
                           >
                             <File className="w-4 h-4" />
                             {receipt.name}
-                          </a>
+                          </div>
                         ))}
                       </div>
                     </div>
