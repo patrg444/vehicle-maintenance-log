@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Bell, Calendar, Gauge, AlertCircle, Check, X } from 'lucide-react';
+import { Plus, Bell, Calendar, Gauge, AlertCircle, Check, X, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, addMonths } from 'date-fns';
 import { Badge } from '@/app/components/ui/badge';
@@ -25,6 +25,7 @@ import {
 } from '@/app/components/ui/select';
 import { EmptyState } from '@/app/components/EmptyState';
 import { Vehicle, Reminder, ServiceEntry } from '@/app/types';
+import * as db from '@/lib/database';
 
 // Helper to parse date string as local date (not UTC)
 const parseLocalDate = (dateStr: string): Date => {
@@ -35,7 +36,7 @@ const parseLocalDate = (dateStr: string): Date => {
 interface RemindersProps {
   vehicles: Vehicle[];
   reminders: Reminder[];
-  setReminders: (reminders: Reminder[]) => void;
+  setReminders: (reminders: Reminder[] | ((prev: Reminder[]) => Reminder[])) => void;
   services: ServiceEntry[];
   selectedVehicle: Vehicle | null;
   selectedVehicleId: string | null;
@@ -54,6 +55,7 @@ export function Reminders({
   onAddVehicle,
 }: RemindersProps) {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     title: '',
     type: 'both' as 'time' | 'mileage' | 'both',
@@ -68,7 +70,7 @@ export function Reminders({
   // Compute next due display
   const computedNextDue = () => {
     if (!selectedVehicle) return '';
-    
+
     const parts = [];
     if (formData.type !== 'mileage') {
       parts.push(format(parseLocalDate(formData.dueDate), 'MMM d, yyyy'));
@@ -77,8 +79,8 @@ export function Reminders({
       const dueMileage = (selectedVehicle.currentOdometer || 0) + formData.dueMileage;
       parts.push(`${dueMileage.toLocaleString()} ${selectedVehicle.odometerUnit}`);
     }
-    
-    return parts.length === 2 
+
+    return parts.length === 2
       ? `${parts[0]} or ${parts[1]} (whichever comes first)`
       : parts[0];
   };
@@ -108,7 +110,7 @@ export function Reminders({
     return false;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!selectedVehicleId) {
@@ -121,25 +123,32 @@ export function Reminders({
       return;
     }
 
-    const newReminder: Reminder = {
-      id: `reminder-${Date.now()}`,
-      vehicleId: selectedVehicleId,
-      title: formData.title,
-      type: formData.type,
-      dueDate: formData.type !== 'mileage' ? formData.dueDate : undefined,
-      dueMileage:
-        formData.type !== 'time'
-          ? (selectedVehicle?.currentOdometer || 0) + formData.dueMileage
-          : undefined,
-      intervalMonths: formData.type !== 'mileage' ? formData.intervalMonths : undefined,
-      intervalMiles: formData.type !== 'time' ? formData.intervalMiles : undefined,
-      isActive: true,
-    };
+    setSaving(true);
+    try {
+      const newReminder = await db.createReminder({
+        vehicleId: selectedVehicleId,
+        title: formData.title,
+        type: formData.type,
+        dueDate: formData.type !== 'mileage' ? formData.dueDate : undefined,
+        dueMileage:
+          formData.type !== 'time'
+            ? (selectedVehicle?.currentOdometer || 0) + formData.dueMileage
+            : undefined,
+        intervalMonths: formData.type !== 'mileage' ? formData.intervalMonths : undefined,
+        intervalMiles: formData.type !== 'time' ? formData.intervalMiles : undefined,
+        isActive: true,
+      });
 
-    setReminders([...reminders, newReminder]);
-    toast.success('Reminder added');
-    setIsDialogOpen(false);
-    resetForm();
+      setReminders(prev => [...prev, newReminder]);
+      toast.success('Reminder added');
+      setIsDialogOpen(false);
+      resetForm();
+    } catch (error) {
+      toast.error('Failed to create reminder');
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const resetForm = () => {
@@ -153,14 +162,20 @@ export function Reminders({
     });
   };
 
-  const deleteReminder = (id: string) => {
+  const deleteReminder = async (id: string) => {
     if (confirm('Delete this reminder?')) {
-      setReminders(reminders.filter((r) => r.id !== id));
-      toast.success('Reminder deleted');
+      try {
+        await db.deleteReminder(id);
+        setReminders(prev => prev.filter((r) => r.id !== id));
+        toast.success('Reminder deleted');
+      } catch (error) {
+        toast.error('Failed to delete reminder');
+        console.error(error);
+      }
     }
   };
 
-  const completeReminder = (reminder: Reminder) => {
+  const completeReminder = async (reminder: Reminder) => {
     if (!selectedVehicle) return;
 
     // Calculate next due dates
@@ -178,21 +193,23 @@ export function Reminders({
       nextDueMileage = (selectedVehicle.currentOdometer ?? 0) + reminder.intervalMiles;
     }
 
-    setReminders(
-      reminders.map((r) =>
-        r.id === reminder.id
-          ? {
-              ...r,
-              dueDate: nextDueDate,
-              dueMileage: nextDueMileage,
-              lastCompleted: format(new Date(), 'yyyy-MM-dd'),
-              lastCompletedOdometer: selectedVehicle.currentOdometer,
-            }
-          : r
-      )
-    );
+    try {
+      const updated = await db.updateReminder(reminder.id, {
+        dueDate: nextDueDate,
+        dueMileage: nextDueMileage,
+        lastCompleted: format(new Date(), 'yyyy-MM-dd'),
+        lastCompletedOdometer: selectedVehicle.currentOdometer ?? undefined,
+      });
 
-    toast.success('Reminder completed and rescheduled');
+      setReminders(prev =>
+        prev.map((r) => r.id === reminder.id ? updated : r)
+      );
+
+      toast.success('Reminder completed and rescheduled');
+    } catch (error) {
+      toast.error('Failed to update reminder');
+      console.error(error);
+    }
   };
 
   if (!selectedVehicle) {
@@ -305,6 +322,7 @@ export function Reminders({
                     }
                     placeholder="e.g., Oil Change, Tire Rotation"
                     required
+                    disabled={saving}
                   />
                 </div>
                 <div className="space-y-2">
@@ -314,6 +332,7 @@ export function Reminders({
                     onValueChange={(value: 'time' | 'mileage' | 'both') =>
                       setFormData({ ...formData, type: value })
                     }
+                    disabled={saving}
                   >
                     <SelectTrigger id="type">
                       <SelectValue />
@@ -336,6 +355,7 @@ export function Reminders({
                         onChange={(e) =>
                           setFormData({ ...formData, dueDate: e.target.value })
                         }
+                        disabled={saving}
                       />
                     </div>
                     <div className="space-y-2">
@@ -351,6 +371,7 @@ export function Reminders({
                           })
                         }
                         min={1}
+                        disabled={saving}
                       />
                     </div>
                   </>
@@ -372,6 +393,7 @@ export function Reminders({
                           })
                         }
                         min={1}
+                        disabled={saving}
                       />
                       <p className="text-xs text-gray-500">
                         Will be due at:{' '}
@@ -396,6 +418,7 @@ export function Reminders({
                           })
                         }
                         min={1}
+                        disabled={saving}
                       />
                     </div>
                   </>
@@ -419,10 +442,20 @@ export function Reminders({
                     setIsDialogOpen(false);
                     resetForm();
                   }}
+                  disabled={saving}
                 >
                   Cancel
                 </Button>
-                <Button type="submit">Add Reminder</Button>
+                <Button type="submit" disabled={saving}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    'Add Reminder'
+                  )}
+                </Button>
               </DialogFooter>
             </form>
           </DialogContent>
@@ -564,7 +597,7 @@ export function Reminders({
           icon={Bell}
           title="No reminders set"
           description="Add a reminder to stay on top of maintenance"
-          helperText="💡 Choose months, miles, or both. We'll track whichever comes first."
+          helperText="Choose months, miles, or both. We'll track whichever comes first."
           primaryAction={{
             label: 'Add Reminder',
             onClick: () => setIsDialogOpen(true),
